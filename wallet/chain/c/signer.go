@@ -1,17 +1,15 @@
-// Copyright (C) 2019-2023, Ava Labs, Inc. All rights reserved.
+// Copyright (C) 2019-2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
 package c
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
-	stdcontext "context"
-
-	"github.com/ava-labs/coreth/plugin/evm"
-
-	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ava-labs/coreth/plugin/evm/atomic"
+	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/ava-labs/avalanchego/database"
 	"github.com/ava-labs/avalanchego/ids"
@@ -38,20 +36,27 @@ var (
 )
 
 type Signer interface {
-	SignUnsignedAtomic(ctx stdcontext.Context, tx evm.UnsignedAtomicTx) (*evm.Tx, error)
-	SignAtomic(ctx stdcontext.Context, tx *evm.Tx) error
+	// SignAtomic adds as many missing signatures as possible to the provided
+	// transaction.
+	//
+	// If there are already some signatures on the transaction, those signatures
+	// will not be removed.
+	//
+	// If the signer doesn't have the ability to provide a required signature,
+	// the signature slot will be skipped without reporting an error.
+	SignAtomic(ctx context.Context, tx *atomic.Tx) error
 }
 
 type EthKeychain interface {
 	// The returned Signer can provide a signature for [addr]
-	GetEth(addr ethcommon.Address) (keychain.Signer, bool)
+	GetEth(addr common.Address) (keychain.Signer, bool)
 	// Returns the set of addresses for which the accessor keeps an associated
 	// signer
-	EthAddresses() set.Set[ethcommon.Address]
+	EthAddresses() set.Set[common.Address]
 }
 
 type SignerBackend interface {
-	GetUTXO(ctx stdcontext.Context, chainID, utxoID ids.ID) (*avax.UTXO, error)
+	GetUTXO(ctx context.Context, chainID, utxoID ids.ID) (*avax.UTXO, error)
 }
 
 type txSigner struct {
@@ -68,20 +73,15 @@ func NewSigner(avaxKC keychain.Keychain, ethKC EthKeychain, backend SignerBacken
 	}
 }
 
-func (s *txSigner) SignUnsignedAtomic(ctx stdcontext.Context, utx evm.UnsignedAtomicTx) (*evm.Tx, error) {
-	tx := &evm.Tx{UnsignedAtomicTx: utx}
-	return tx, s.SignAtomic(ctx, tx)
-}
-
-func (s *txSigner) SignAtomic(ctx stdcontext.Context, tx *evm.Tx) error {
+func (s *txSigner) SignAtomic(ctx context.Context, tx *atomic.Tx) error {
 	switch utx := tx.UnsignedAtomicTx.(type) {
-	case *evm.UnsignedImportTx:
+	case *atomic.UnsignedImportTx:
 		signers, err := s.getImportSigners(ctx, utx.SourceChain, utx.ImportedInputs)
 		if err != nil {
 			return err
 		}
 		return sign(tx, true, signers)
-	case *evm.UnsignedExportTx:
+	case *atomic.UnsignedExportTx:
 		signers := s.getExportSigners(utx.Ins)
 		return sign(tx, true, signers)
 	default:
@@ -89,7 +89,7 @@ func (s *txSigner) SignAtomic(ctx stdcontext.Context, tx *evm.Tx) error {
 	}
 }
 
-func (s *txSigner) getImportSigners(ctx stdcontext.Context, sourceChainID ids.ID, ins []*avax.TransferableInput) ([][]keychain.Signer, error) {
+func (s *txSigner) getImportSigners(ctx context.Context, sourceChainID ids.ID, ins []*avax.TransferableInput) ([][]keychain.Signer, error) {
 	txSigners := make([][]keychain.Signer, len(ins))
 	for credIndex, transferInput := range ins {
 		input, ok := transferInput.In.(*secp256k1fx.TransferInput)
@@ -134,7 +134,7 @@ func (s *txSigner) getImportSigners(ctx stdcontext.Context, sourceChainID ids.ID
 	return txSigners, nil
 }
 
-func (s *txSigner) getExportSigners(ins []evm.EVMInput) [][]keychain.Signer {
+func (s *txSigner) getExportSigners(ins []atomic.EVMInput) [][]keychain.Signer {
 	txSigners := make([][]keychain.Signer, len(ins))
 	for credIndex, input := range ins {
 		inputSigners := make([]keychain.Signer, 1)
@@ -151,9 +151,14 @@ func (s *txSigner) getExportSigners(ins []evm.EVMInput) [][]keychain.Signer {
 	return txSigners
 }
 
+func SignUnsignedAtomic(ctx context.Context, signer Signer, utx atomic.UnsignedAtomicTx) (*atomic.Tx, error) {
+	tx := &atomic.Tx{UnsignedAtomicTx: utx}
+	return tx, signer.SignAtomic(ctx, tx)
+}
+
 // TODO: remove [signHash] after the ledger supports signing all transactions.
-func sign(tx *evm.Tx, signHash bool, txSigners [][]keychain.Signer) error {
-	unsignedBytes, err := evm.Codec.Marshal(version, &tx.UnsignedAtomicTx)
+func sign(tx *atomic.Tx, signHash bool, txSigners [][]keychain.Signer) error {
+	unsignedBytes, err := atomic.Codec.Marshal(version, &tx.UnsignedAtomicTx)
 	if err != nil {
 		return fmt.Errorf("couldn't marshal unsigned tx: %w", err)
 	}
@@ -214,7 +219,7 @@ func sign(tx *evm.Tx, signHash bool, txSigners [][]keychain.Signer) error {
 		}
 	}
 
-	signedBytes, err := evm.Codec.Marshal(version, tx)
+	signedBytes, err := atomic.Codec.Marshal(version, tx)
 	if err != nil {
 		return fmt.Errorf("couldn't marshal tx: %w", err)
 	}

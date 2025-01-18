@@ -1,4 +1,4 @@
-// Copyright (C) 2019-2023, Ava Labs, Inc. All rights reserved.
+// Copyright (C) 2019-2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
 package secp256k1
@@ -8,16 +8,17 @@ import (
 	"fmt"
 	"strings"
 
-	stdecdsa "crypto/ecdsa"
-
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
-
-	secp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/ava-labs/avalanchego/cache"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/cb58"
 	"github.com/ava-labs/avalanchego/utils/hashing"
+
+	stdecdsa "crypto/ecdsa"
+	secp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
 )
 
 const (
@@ -167,6 +168,10 @@ func (k *PublicKey) Address() ids.ShortID {
 	return k.addr
 }
 
+func (k *PublicKey) EthAddress() common.Address {
+	return crypto.PubkeyToAddress(*(k.ToECDSA()))
+}
+
 func (k *PublicKey) Bytes() []byte {
 	if k.bytes == nil {
 		k.bytes = k.pk.SerializeCompressed()
@@ -189,6 +194,10 @@ func (k *PrivateKey) PublicKey() *PublicKey {
 
 func (k *PrivateKey) Address() ids.ShortID {
 	return k.PublicKey().Address()
+}
+
+func (k *PrivateKey) EthAddress() common.Address {
+	return crypto.PubkeyToAddress(*(k.PublicKey().ToECDSA()))
 }
 
 func (k *PrivateKey) Sign(msg []byte) ([]byte, error) {
@@ -220,7 +229,7 @@ func (k *PrivateKey) String() string {
 }
 
 func (k *PrivateKey) MarshalJSON() ([]byte, error) {
-	return []byte("\"" + k.String() + "\""), nil
+	return []byte(`"` + k.String() + `"`), nil
 }
 
 func (k *PrivateKey) MarshalText() ([]byte, error) {
